@@ -14,8 +14,8 @@ A Python tool to quickly validate large collections of GitHub repository bookmar
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/github-repo-checker.git
-cd github-repo-checker
+git clone https://github.com/NullSpace-BitCradle/GitHub_Repo_Checker.git
+cd GitHub_Repo_Checker
 pip install requests
 ```
 
