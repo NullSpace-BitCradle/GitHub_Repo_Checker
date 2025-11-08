@@ -24,14 +24,16 @@ pip install requests
 ### Basic Usage
 
 1. Create a text file with your GitHub URLs (one per line):
-```
+
+```text
 https://github.com/SecureAuthCorp/impacket
 https://github.com/danielmiessler/SecLists
 https://github.com/carlospolop/PEASS-ng
 https://github.com/rebootuser/LinEnum
 ```
 
-2. Run the checker:
+1. Run the checker:
+
 ```bash
 python github_checker.py urls.txt
 ```
@@ -53,7 +55,7 @@ python github_checker.py urls.txt YOUR_GITHUB_TOKEN
 
 ## Sample Output
 
-```
+```text
 Found 150 GitHub URLs to check...
 [1/150] ✓ SecureAuthCorp/impacket
 [2/150] ✗ someuser/deleted-repo - Repository not found
