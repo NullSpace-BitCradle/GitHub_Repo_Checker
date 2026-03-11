@@ -4,12 +4,13 @@ GitHub Repository Batch Checker
 Checks if GitHub repositories exist and are accessible.
 """
 
-import requests
+import os
 import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from urllib.parse import urlparse
+
+import requests
 
 class GitHubRepoChecker:
     def __init__(self, token=None, max_workers=10):
@@ -32,24 +33,27 @@ class GitHubRepoChecker:
             match = re.search(pattern, url)
             if match:
                 owner, repo = match.groups()
-                # Clean up repo name (remove .git, etc.)
-                repo = repo.rstrip('.git')
+                # Clean up repo name (remove .git suffix)
+                repo = repo.removesuffix('.git')
                 return owner, repo
         return None, None
     
     def check_repo(self, url):
         """Check if a single repository exists"""
         owner, repo = self.extract_repo_info(url)
-        
+
         if not owner or not repo:
             return {
                 'url': url,
                 'status': 'INVALID_URL',
                 'message': 'Could not parse GitHub URL'
             }
-        
+
         api_url = f'https://api.github.com/repos/{owner}/{repo}'
-        
+
+        # Rate limit delay per request (respects GitHub API limits)
+        time.sleep(0.1)
+
         try:
             response = self.session.get(api_url, timeout=10)
             
@@ -104,9 +108,6 @@ class GitHubRepoChecker:
                 
                 if progress_callback:
                     progress_callback(i + 1, len(urls), result)
-                
-                # Small delay to be nice to GitHub's API
-                time.sleep(0.1)
         
         return results
 
@@ -122,7 +123,7 @@ def main():
         sys.exit(1)
     
     filename = sys.argv[1]
-    token = sys.argv[2] if len(sys.argv) > 2 else None
+    token = sys.argv[2] if len(sys.argv) > 2 else os.environ.get('GITHUB_TOKEN')
     
     try:
         with open(filename, 'r') as f:
