@@ -98,8 +98,7 @@ class FakeClock:
 
 
 def make_checker(mock, **kwargs):
-    kwargs.setdefault('retries', 0)
-    kwargs.setdefault('backoff', 0)
+    # No retry overrides: tests run with the retry configuration that ships.
     kwargs.setdefault('max_workers', 1)
     return GitHubRepoChecker(api_base=mock.url, log=lambda message: None, **kwargs)
 
@@ -252,7 +251,7 @@ class TestStatusHandling(MockedTestCase):
 
     def test_token_is_sent_as_bearer_header(self):
         self.mock.ok('octo', 'live')
-        checker = GitHubRepoChecker(token='tok-123', api_base=self.mock.url, retries=0)
+        checker = GitHubRepoChecker(token='tok-123', api_base=self.mock.url)
         checker.check_repo('https://github.com/octo/live')
         self.assertEqual(self.mock.auth_headers, ['Bearer tok-123'])
 
@@ -348,16 +347,62 @@ class TestRateLimit(MockedTestCase):
 class TestTransientFailures(MockedTestCase):
     def test_5xx_is_retried_then_succeeds(self):
         self.mock.script['/repos/octo/a'] = [(502, {}, '{}'), (200, {}, repo_json('octo/a'))]
-        result = make_checker(self.mock, retries=2).check_repo('https://github.com/octo/a')
+        checker = make_checker(self.mock)
+        clock = FakeClock()
+        checker._time, checker._sleep = clock.time, clock.sleep
+        result = checker.check_repo('https://github.com/octo/a')
         self.assertEqual(result['status'], 'EXISTS')
         self.assertEqual(len(self.mock.hits), 2)
+        self.assertEqual(clock.slept, [0.5])
 
     def test_persistent_5xx_is_reported_as_unchecked_error_not_dead(self):
+        """Shipped config: 3 retries with 0.5 s exponential backoff, then ERROR."""
         self.mock.script['/repos/octo/a'] = [(503, {}, '{}')]
-        result = make_checker(self.mock, retries=2).check_repo('https://github.com/octo/a')
+        checker = make_checker(self.mock)
+        clock = FakeClock()
+        checker._time, checker._sleep = clock.time, clock.sleep
+        result = checker.check_repo('https://github.com/octo/a')
         self.assertEqual(result['status'], 'ERROR')
         self.assertIn('not checked', result['message'])
-        self.assertEqual(len(self.mock.hits), 3)
+        self.assertEqual(len(self.mock.hits), 4)
+        self.assertEqual(clock.slept, [0.5, 1.0, 2.0])
+
+    def test_urllib3_retry_never_sleeps_on_a_response(self):
+        """The adapter only retries connection failures; Retry-After is handled by the checker."""
+        retry = make_checker(self.mock).session.get_adapter(self.mock.url).max_retries
+        self.assertFalse(retry.respect_retry_after_header)
+        self.assertFalse(retry.status_forcelist)
+        self.assertEqual(retry.status, 0)
+
+    def test_429_with_long_retry_after_is_one_request_and_rate_limited(self):
+        """Shipped retry config must not sleep on Retry-After inside session.get."""
+        self.mock.script['/repos/octo/a'] = [(429, {'Retry-After': 500}, '{}')]
+        checker = make_checker(self.mock)
+        start = time.time()
+        result = checker.check_repo('https://github.com/octo/a')
+        self.assertLess(time.time() - start, 5)
+        self.assertEqual(result['status'], 'RATE_LIMITED')
+        self.assertEqual(len(self.mock.hits), 1)
+
+    def test_503_with_long_retry_after_is_one_request_and_rate_limited(self):
+        self.mock.script['/repos/octo/a'] = [(503, {'Retry-After': 500}, '{}')]
+        checker = make_checker(self.mock)
+        start = time.time()
+        result = checker.check_repo('https://github.com/octo/a')
+        self.assertLess(time.time() - start, 5)
+        self.assertEqual(result['status'], 'RATE_LIMITED')
+        self.assertEqual(len(self.mock.hits), 1)
+
+    def test_503_with_short_retry_after_waits_the_header_once_then_succeeds(self):
+        self.mock.script['/repos/octo/a'] = [(503, {'Retry-After': 5}, '{}'),
+                                              (200, {}, repo_json('octo/a'))]
+        checker = make_checker(self.mock)
+        clock = FakeClock()
+        checker._time, checker._sleep = clock.time, clock.sleep
+        result = checker.check_repo('https://github.com/octo/a')
+        self.assertEqual(result['status'], 'EXISTS')
+        self.assertEqual(len(self.mock.hits), 2)
+        self.assertGreaterEqual(sum(clock.slept), 5)
 
     def test_connection_failure_is_error(self):
         checker = make_checker(self.mock)
@@ -379,7 +424,6 @@ class TestCommandLine(MockedTestCase):
             out, err = io.StringIO(), io.StringIO()
             with patch.object(github_checker, 'API_BASE', self.mock.url), \
                     patch.dict(os.environ, env, clear=False), \
-                    patch.object(GitHubRepoChecker, '__init__', _patched_init), \
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 if not token:
                     os.environ.pop('GITHUB_TOKEN', None)
@@ -441,7 +485,6 @@ class TestCommandLine(MockedTestCase):
                 f.write('https://github.com/octo/a\n')
             out, err = io.StringIO(), io.StringIO()
             with patch.object(github_checker, 'API_BASE', self.mock.url), \
-                    patch.object(GitHubRepoChecker, '__init__', _patched_init), \
                     contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
                 code = github_checker.main([path, 'argv-token-value'])
         self.assertEqual(code, 0)
@@ -461,16 +504,6 @@ class TestCommandLine(MockedTestCase):
         self.mock.ok('octo', 'a')
         code, out, _ = self._run(raw=b'caf\xe9 https://github.com/octo/a\n')
         self.assertEqual(code, 0)
-
-
-_real_init = GitHubRepoChecker.__init__
-
-
-def _patched_init(self, *args, **kwargs):
-    """CLI tests: no retries or backoff so failures return at once."""
-    kwargs.setdefault('retries', 0)
-    kwargs.setdefault('backoff', 0)
-    _real_init(self, *args, **kwargs)
 
 
 if __name__ == '__main__':

@@ -132,7 +132,9 @@ NOT_FOUND, FORBIDDEN, RATE_LIMITED and ERROR each get their own section in the s
 |------|---------|
 | 0 | Every repository was checked and exists |
 | 1 | At least one is NOT_FOUND, FORBIDDEN, RATE_LIMITED or ERROR |
-| 2 | Usage or input error: file missing or unreadable, or no repository URLs in it |
+| 2 | Usage or input error: file missing or unreadable, no repository URLs in it, or an invalid option |
+
+Earlier versions always exited 0 and used 1 for a missing file, so a script that relied on those needs updating. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Use Cases
 

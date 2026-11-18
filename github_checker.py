@@ -71,14 +71,21 @@ class GitHubRepoChecker:
         if token:
             self.session.headers.update({'Authorization': f'Bearer {token}'})
 
+        self.retries = retries
+        self.backoff = backoff
+        # urllib3 retries only connection-level failures. It must never act on a
+        # response: with respect_retry_after_header on, it would sleep for a 429
+        # or 503 Retry-After (up to hours) inside session.get, before the rate
+        # limit logic below sees the response. 5xx retries are done in check_repo.
         retry = Retry(
             total=retries,
             connect=retries,
             read=retries,
-            status=retries,
+            status=0,
             backoff_factor=backoff,
-            status_forcelist=(500, 502, 503, 504),
+            status_forcelist=None,
             allowed_methods=('GET',),
+            respect_retry_after_header=False,
             raise_on_status=False,
         )
         adapter = HTTPAdapter(max_retries=retry)
@@ -109,6 +116,9 @@ class GitHubRepoChecker:
     def _is_rate_limited(self, response):
         if response.status_code == 429:
             return True
+        if response.status_code == 503:
+            # A 503 that says when to come back is throttling, not an outage.
+            return 'Retry-After' in response.headers
         if response.status_code != 403:
             return False
         if self._header_int(response, 'X-RateLimit-Remaining') == 0:
@@ -190,7 +200,9 @@ class GitHubRepoChecker:
         api_url = f'{self.api_base}/repos/{owner}/{repo}'
 
         try:
-            for _ in range(self.max_rate_retries + 1):
+            rate_tries = 0
+            server_tries = 0
+            while True:
                 if self._stop_until is not None:
                     return self._rate_limited_result(url, owner, repo)
                 self._wait_for_pause()
@@ -198,12 +210,19 @@ class GitHubRepoChecker:
                 response = self.session.get(api_url, timeout=10)
 
                 if self._is_rate_limited(response):
+                    # Pause (or stop the run) before deciding to retry, so
+                    # other workers hold off too.
                     self._pause(self._wait_seconds(response))
+                    if rate_tries >= self.max_rate_retries:
+                        return self._rate_limited_result(url, owner, repo)
+                    rate_tries += 1
+                    continue
+                if response.status_code in (500, 502, 503, 504) and server_tries < self.retries:
+                    self._sleep(self.backoff * (2 ** server_tries))
+                    server_tries += 1
                     continue
                 self._note_remaining(response)
                 break
-            else:
-                return self._rate_limited_result(url, owner, repo)
 
             if response.status_code == 200:
                 repo_data = response.json()
