@@ -17,7 +17,6 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Output files
-*.csv
+# Your own URL lists (urls.txt and similar) stay out of the repo
 *.txt
 !requirements.txt
