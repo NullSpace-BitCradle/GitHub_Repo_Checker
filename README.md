@@ -162,7 +162,7 @@ The tests run against a local mock HTTP server. They do not contact GitHub or us
 
 ## Requirements
 
-- Python 3.9+
+- Python 3.11+
 - `requests` 2.32 or newer (see `requirements.txt`)
 
 ## License
